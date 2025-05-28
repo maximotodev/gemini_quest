@@ -5,7 +5,7 @@ from utils import fetch_trivia_question_from_gemini
 import os
 
 app = Flask(__name__)
-CORS(app, origins="http://localhost:5173")  # Replace with your frontend URL
+CORS(app, origins=["https://gemini-quest.netlify.app", "http://localhost:5173"])  # Replace with your actual Netlify URL
 
 @app.route("/api/question", methods=["POST"])
 async def get_question():
