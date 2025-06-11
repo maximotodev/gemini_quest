@@ -20,86 +20,33 @@ def escape_json_string(text: str) -> str:
     """Escapes special characters in a string for safe JSON embedding."""
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
-def clean_gemini_json(json_string: str) -> str:
-    """Aggressively cleans up Gemini's JSON output using regex."""
-
-    # Remove code fences
-    json_string = re.sub(r"```(?:json)?\s*\n?(.*?)\n?\s*```", r"\1", json_string, flags=re.DOTALL)
-
-    # Find JSON boundaries
-    start_match = re.search(r"\[", json_string)
-    end_match = re.search(r"\]", json_string[::-1])  # Find last bracket from the reversed string
-    if not start_match or not end_match:
-        print("Could not find JSON start or end markers.")
-        return ""
-
-    start_index = start_match.start()
-    end_index = len(json_string) - end_match.start()  # Adjust for reversed string
-
-    json_string = json_string[start_index:end_index]
-
-    # Remove invalid key-value pairs inserted by Gemini (NEW!)
-    json_string = re.sub(r'\s*"\w+":\s*\[.*?\]\s*}', '}', json_string)
-
-    # Remove any text before a closing brace '}' (general cleanup)
-    json_string = re.sub(r'\s*[^"}\n]+\s*}', '}', json_string)
-
-    # Remove trailing commas
-    json_string = re.sub(r',\s*}', '}', json_string)
-    json_string = re.sub(r'}\s*,', '},', json_string)
-
-    # Remove json} or other similar endings
-    json_string = re.sub(r'\s*json}', '}', json_string)
-
-    return json_string
-
 def parse_gemini_response(response_text: str) -> Optional[List[Dict[str, Any]]]:
-    """Parses the Gemini API JSON response, handling potential errors and cleaning up."""
+    """Parses the Gemini API text response (non-JSON)"""
+    questions = []
     try:
-        cleaned_json = clean_gemini_json(response_text)
-        if not cleaned_json:
-            print("Could not clean JSON.")
-            return None
+        lines = response_text.strip().split('\n')
+        for line in lines:
+            parts = line.split('|')
+            if len(parts) == 4:
+                question_text, options_str, correct_answer, explanation = parts
+                options = [opt.strip() for opt in options_str.split(',')]
 
-        questions = json.loads(cleaned_json)
-
-        if not isinstance(questions, list):
-            print(f"Invalid JSON format: expected a list, got: {type(questions)}")
-            return None
-
-        valid_questions = []
-        for question in questions:
-            if (isinstance(question, dict) and
-                "question" in question and isinstance(question["question"], str) and
-                "options" in question and isinstance(question["options"], list) and len(question["options"]) == 4 and all(isinstance(opt, str) for opt in question["options"]) and
-                "correctAnswer" in question and isinstance(question["correctAnswer"], str) and
-                "explanation" in question and isinstance(question["explanation"], str)):
-
-                correct_answer = question["correctAnswer"].strip()
-                if correct_answer in [opt.strip() for opt in question["options"]]:
-                     valid_questions.append({
-                         "question": escape_json_string(question["question"]),
-                         "options": [escape_json_string(opt) for opt in question["options"]],
-                         "correctAnswer": escape_json_string(question["correctAnswer"]),
-                         "explanation": escape_json_string(question["explanation"])
-                      })
+                if len(options) == 4 and correct_answer.strip() in options:
+                    questions.append({
+                        "question": escape_json_string(question_text.strip()),
+                        "options": [escape_json_string(opt) for opt in options],
+                        "correctAnswer": escape_json_string(correct_answer.strip()),
+                        "explanation": escape_json_string(explanation.strip())
+                    })
                 else:
-                    print(f"Invalid question format: correctAnswer '{correct_answer}' not found exactly in options: {question['options']}")
+                    print(f"Invalid question format: {line}")
             else:
-                print(f"Invalid question format: {question}")
+                print(f"Skipping invalid line: {line}")
 
-        if len(valid_questions) > 0:
-            return valid_questions
-        else:
-            print("No valid questions found after validation.")
-            return None
+        return questions if questions else None  # Return None if no valid questions
 
-    except json.JSONDecodeError as e:
-        print(f"JSONDecodeError: {e}\nRaw response: {response_text}")
-        print(traceback.format_exc())
-        return None
     except Exception as e:
-        print(f"Unexpected error during JSON parsing: {e}\nRaw response: {response_text}")
+        print(f"Error parsing response: {e}")
         print(traceback.format_exc())
         return None
 
@@ -113,30 +60,25 @@ async def fetch_trivia_question_from_gemini(category: str, num_questions: int = 
         model = GenerativeModel(model_name="gemini-2.5-flash-preview-04-17")
 
         prompt = f"""
-            You are a fun and engaging trivia game host for "Gemini Quest".
-            Generate {num_questions} trivia questions for the category: "{category}".
-            Provide each question, 4 multiple-choice options, the clearly indicated correct answer, *and a brief explanation (under 50 words) for the correct answer*.
-            The value for "correctAnswer" MUST EXACTLY MATCH one of the strings in the "options" array, *without any leading or trailing whitespace*.
-            Return your response as a single, valid JSON object.  The JSON structure should be an array of question objects.  Each question object should have the following structure:
-            [
-                {{
-                  "question": "The actual trivia question text?",
-                  "options": ["Option A Text", "Option B Text", "Option C Text", "Option D Text"],
-                  "correctAnswer": "The text of the correct option",
-                  "explanation": "Brief explanation of why the answer is correct."
-                }},
-                {{
-                  "question": "Another question?",
-                  "options": ["Option A", "Option B", "Option C Text", "Option D Text"],
-                  "correctAnswer": "Option B Text",
-                  "explanation": "Brief explanation of why the answer is correct."
-                }},
-                // ... more questions
-            ]
-            Ensure the options are distinct and plausible. The questions should be engaging and fit the category.
-            For "Brain Teasers", make it a riddle or short puzzle.
-            Ensure the entire response is ONLY the JSON array, without any surrounding text or markdown.
-            """
+    You are a fun and engaging trivia game host for "Gemini Quest".
+    Generate {num_questions} trivia questions for the category: "{category}".
+
+    For each question, provide the following information, separated by the '|' character:
+    1. The trivia question text.
+    2. Four distinct and plausible multiple-choice options, separated by commas. Ensure no option contains a comma within it.
+    3. The correct answer (which MUST EXACTLY MATCH one of the options).
+    4. A brief explanation (under 50 words) for the correct answer.
+
+    Return each question on a new line.  Do NOT include any surrounding text, JSON, or markdown.
+    Ensure there are exactly four options, and the correct answer is one of them.
+    If you cannot provide the information in the specified format, skip the question.
+
+    Example format:
+    Question text|Option A,Option B,Option C,Option D|Correct Answer|Explanation text
+
+    Ensure the options are distinct and plausible. The questions should be engaging and fit the category.
+    For "Brain Teasers", make it a riddle or short puzzle.
+    """
         generation_config = GenerationConfig(temperature=0.7)
         response = model.generate_content(prompt, generation_config=generation_config)
         parsed_response = parse_gemini_response(response.text)
