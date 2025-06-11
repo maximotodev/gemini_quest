@@ -1,4 +1,3 @@
-# backend/utils.py
 import os
 from dotenv import load_dotenv
 from google.generativeai import GenerativeModel, configure, GenerationConfig
@@ -17,56 +16,84 @@ def get_gemini_api_key() -> str:
         raise ValueError("GEMINI_API_KEY not found in environment variables.")
     return api_key
 
+def escape_json_string(text: str) -> str:
+    """Escapes special characters in a string for safe JSON embedding."""
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+def clean_gemini_json(json_string: str) -> str:
+    """Aggressively cleans up Gemini's JSON output using regex."""
+
+    # Remove code fences
+    json_string = re.sub(r"```(?:json)?\s*\n?(.*?)\n?\s*```", r"\1", json_string, flags=re.DOTALL)
+
+    # Find JSON boundaries
+    start_match = re.search(r"\[", json_string)
+    end_match = re.search(r"\]", json_string[::-1])  # Find last bracket from the reversed string
+    if not start_match or not end_match:
+        print("Could not find JSON start or end markers.")
+        return ""
+
+    start_index = start_match.start()
+    end_index = len(json_string) - end_match.start()  # Adjust for reversed string
+
+    json_string = json_string[start_index:end_index]
+
+    # Remove invalid key-value pairs inserted by Gemini (NEW!)
+    json_string = re.sub(r'\s*"\w+":\s*\[.*?\]\s*}', '}', json_string)
+
+    # Remove any text before a closing brace '}' (general cleanup)
+    json_string = re.sub(r'\s*[^"}\n]+\s*}', '}', json_string)
+
+    # Remove trailing commas
+    json_string = re.sub(r',\s*}', '}', json_string)
+    json_string = re.sub(r'}\s*,', '},', json_string)
+
+    # Remove json} or other similar endings
+    json_string = re.sub(r'\s*json}', '}', json_string)
+
+    return json_string
+
 def parse_gemini_response(response_text: str) -> Optional[List[Dict[str, Any]]]:
     """Parses the Gemini API JSON response, handling potential errors and cleaning up."""
-    # Correctly handle code fences (```json ... ```)
-    fence_regex = r"```(?:json)?\s*\n?(.*?)\n?\s*```"
-    match = re.search(fence_regex, response_text, re.DOTALL)
-    if match:
-        response_text = match.group(1).strip()
-
     try:
-        questions = json.loads(response_text)
+        cleaned_json = clean_gemini_json(response_text)
+        if not cleaned_json:
+            print("Could not clean JSON.")
+            return None
+
+        questions = json.loads(cleaned_json)
+
         if not isinstance(questions, list):
             print(f"Invalid JSON format: expected a list, got: {type(questions)}")
             return None
 
-        # Validate each question
         valid_questions = []
         for question in questions:
-            if (
-                isinstance(question, dict) and
-                "question" in question and
-                "options" in question and
-                isinstance(question["options"], list) and
-                len(question["options"]) == 4 and
-                "correctAnswer" in question
-            ):
+            if (isinstance(question, dict) and
+                "question" in question and isinstance(question["question"], str) and
+                "options" in question and isinstance(question["options"], list) and len(question["options"]) == 4 and all(isinstance(opt, str) for opt in question["options"]) and
+                "correctAnswer" in question and isinstance(question["correctAnswer"], str) and
+                "explanation" in question and isinstance(question["explanation"], str)):
+
                 correct_answer = question["correctAnswer"].strip()
-                found_match = False
-                for option in question["options"]:
-                    if correct_answer.lower() in option.strip().lower():
-                        found_match = True
-                        question["correctAnswer"] = option.strip()
-                        break # Stop searching once a match is found
-                if found_match:
-                    # Handle the explanation safely.  If the explanation is missing or the wrong type, do not cause the parsing function to crash.
-                    if "explanation" in question and isinstance(question["explanation"], str):
-                        valid_questions.append(question)
-                    else:
-                        # If the explanation is invalid, do not cause the entire function to crash.
-                        print(f"Invalid question format: Explanation missing or not a string: {question}")
-                        question["explanation"] = "No explanation available."  # Set a default explanation
-                        valid_questions.append(question)
+                if correct_answer in [opt.strip() for opt in question["options"]]:
+                     valid_questions.append({
+                         "question": escape_json_string(question["question"]),
+                         "options": [escape_json_string(opt) for opt in question["options"]],
+                         "correctAnswer": escape_json_string(question["correctAnswer"]),
+                         "explanation": escape_json_string(question["explanation"])
+                      })
                 else:
-                    print(f"Invalid question format: correctAnswer '{correct_answer}' not found (or not close enough) in options: {question['options']}")
+                    print(f"Invalid question format: correctAnswer '{correct_answer}' not found exactly in options: {question['options']}")
             else:
                 print(f"Invalid question format: {question}")
-        if len(valid_questions) == len(questions):  # Only return if all questions are valid
-          return valid_questions
+
+        if len(valid_questions) > 0:
+            return valid_questions
         else:
-            print(f"Only {len(valid_questions)} out of {len(questions)} questions were valid.")
+            print("No valid questions found after validation.")
             return None
+
     except json.JSONDecodeError as e:
         print(f"JSONDecodeError: {e}\nRaw response: {response_text}")
         print(traceback.format_exc())
@@ -100,8 +127,8 @@ async def fetch_trivia_question_from_gemini(category: str, num_questions: int = 
                 }},
                 {{
                   "question": "Another question?",
-                  "options": ["Option A", "Option B", "Option C", "Option D"],
-                  "correctAnswer": "Option B",
+                  "options": ["Option A", "Option B", "Option C Text", "Option D Text"],
+                  "correctAnswer": "Option B Text",
                   "explanation": "Brief explanation of why the answer is correct."
                 }},
                 // ... more questions
