@@ -2,7 +2,6 @@
 Flask[async]==3.0.2
 python-dotenv==1.0.1
 google-generativeai
-flask-caching
 flask-cors==4.0.0
 gunicorn==21.2.0 #or more recent
 gevent==22.10.2  # For asynchronous workers with Gunicorn (required if not otherwise available)
