@@ -6,13 +6,19 @@ import json
 import re
 import traceback
 import asyncio
+import logging
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 def get_gemini_api_key() -> str:
     """Loads the Gemini API key from the environment variables."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
+        logging.error("GEMINI_API_KEY not found in environment variables.")
         raise ValueError("GEMINI_API_KEY not found in environment variables.")
     return api_key
 
@@ -39,15 +45,15 @@ def parse_gemini_response(response_text: str) -> Optional[List[Dict[str, Any]]]:
                         "explanation": escape_json_string(explanation.strip())
                     })
                 else:
-                    print(f"Invalid question format: {line}")
+                    logging.warning(f"Invalid question format: {line}")
             else:
-                print(f"Skipping invalid line: {line}")
+                logging.warning(f"Skipping invalid line: {line}")
 
         return questions if questions else None  # Return None if no valid questions
 
     except Exception as e:
-        print(f"Error parsing response: {e}")
-        print(traceback.format_exc())
+        logging.error(f"Error parsing response: {e}")
+        logging.error(traceback.format_exc())
         return None
 
 async def fetch_trivia_question_from_gemini(category: str, num_questions: int = 10) -> Optional[List[Dict[str, Any]]]:
@@ -57,7 +63,7 @@ async def fetch_trivia_question_from_gemini(category: str, num_questions: int = 
     try:
         api_key = get_gemini_api_key()
         configure(api_key=api_key)
-        model = GenerativeModel(model_name="gemini-2.5-flash-preview-04-17")
+        model = GenerativeModel(model_name="gemini-2.5-flash-preview-04-17") # double check this model name is still valid
 
         prompt = f"""
     You are a fun and engaging trivia game host for "Gemini Quest".
@@ -87,8 +93,9 @@ async def fetch_trivia_question_from_gemini(category: str, num_questions: int = 
             # Return exactly the number of questions requested
             return parsed_response
         else:
-            print(f"Failed to parse response: {response.text}")
+            logging.warning(f"Failed to parse response: {response.text}")
             return None
     except Exception as e:
-        print(f"Error fetching trivia questions: {e}")
+        logging.error(f"Error fetching trivia questions: {e}")
+        logging.error(traceback.format_exc())
         return None
